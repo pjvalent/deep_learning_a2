@@ -14,26 +14,38 @@ from utils import *
 
 class Net(tr.nn.Module):
 
-    # Initialize your neural network modules
+    # Initialize all the sub-modules (multihead attention, etc.)
     def __init__(self, max_len, embeddings):
         super(Net, self).__init__()
 
-        # This is just a placeholder network, as simple as possible
-        # Replace with your own network architecture
-        self.readout = tr.nn.Linear(embeddings.shape[1], embeddings.shape[1])
+        d_model = max_len + embeddings.shape[1]
+        num_heads = 1
+
+        self.encoder = MultiHeadAttention(num_heads, d_model, projections="")
+        self.precoder = MultiHeadAttention(num_heads, d_model, masked=True, projections="O")
+        self.decoder = MultiHeadAttention(num_heads, d_model, projections="")
+        self.readout = tr.nn.Linear(d_model, embeddings.shape[1])
+        self.lrelu = tr.nn.LeakyReLU()
+        self.embeddings = embeddings
+        self.positional_encoder = one_hot_positional_encoder(max_len)
+        self.max_len = max_len
 
     # Forward pass arguments:
     #   inputs: embedded input token sequence
     #   outputs: embedded output token sequence predicted so far
-    # Returns:
-    #   logits: input to softmax for predicting the next output token
-    #   data: any other auxiliary data you want to return
+    # Returns softmax logits for predicting the next output token
     def forward(self, inputs, outputs):
-        
-        # Replace with your own network forward pass
-        logits = self.readout(inputs)
-        data = None
-        return logits, data
+        Q = K = V = self.positional_encoder(inputs)
+        encoded = self.encoder(Q, K, V)
+        Q = K = V = self.positional_encoder(outputs)
+        precoded = self.precoder(Q, K, V)
+        decoded = self.decoder(precoded, encoded, encoded)
+        decoded[:,:self.max_len] = 0 # ignore position information at this point
+        if self.readout == None:
+            logits = decoded[:,-self.embeddings.shape[1]:] @ self.embeddings.t()
+        else:
+            logits = self.lrelu(self.readout(decoded)) @ self.embeddings.t() # learned read-out connections
+        return logits, (encoded, precoded, decoded)
 
 # Initialize a network and optimizer to be used for training
 def initialize_for(max_len, embeddings):
@@ -44,6 +56,6 @@ def initialize_for(max_len, embeddings):
     #    net: a torch module
     #    opt: a torch optimizer
     net = Net(max_len, embeddings)
-    opt = tr.optim.Adam(net.parameters(), lr=0.0001)
+    opt = tr.optim.NAdam(net.parameters(), lr=0.01)
 
     return net, opt
